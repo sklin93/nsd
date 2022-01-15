@@ -1,0 +1,6 @@
+data:
+    data_dir : /home/sikun/NSD/data/
+    voxel_size: 1pt8mm
+    roi_file: prf-visualrois.nii.gz
+    roi_vox: roi_vox
+device: cuda
