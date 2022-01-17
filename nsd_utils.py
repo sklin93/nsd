@@ -199,11 +199,11 @@ class NSDDataset(Dataset):
 
     def __getitem__(self, idx, verbose=False):
         sample = {}
+        multi = False if type(idx).__name__ == 'int' else True
         if self.load_img or self.load_caption or self.load_cat:
             nsdId = self.subjectim[0, self.masterordering[idx] - 1] - 1
             if verbose:
                 print(f'stim nsd id: {nsdId}, aka #{nsdId+1} in the tsv files.')
-            multi = True if type(nsdId).__name__ == 'ndarray' else False
 
         if self.load_img:
             # dealing with multiple indexing,
@@ -240,7 +240,6 @@ class NSDDataset(Dataset):
             else:
                 fmri_file = os.path.join(
                     self.fmri_dir, f'{self.fmri_files[0][:-7]}{sess:02}.hdf5')
-                # ipdb.set_trace()
                 with h5py.File(fmri_file, 'r') as f:
                     fmri_sample = f[self.fmri_key][idx_array % TRIAL_PER_SESS]                
                 if verbose:
