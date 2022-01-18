@@ -19,7 +19,7 @@ with open('nsd_config.yaml') as f:
 
 DATA_DIR = config['data']['data_dir']
 voxel_size = config['data']['voxel_size']
-ROI_FILE = config['data']['roi_file']
+ROI_FILES = config['data']['roi_files']
 ROI_VOX = config['data']['roi_vox']
 
 STIM_FILE = os.path.join(DATA_DIR, 'nsddata_stimuli/stimuli/nsd/nsd_stimuli.hdf5')
@@ -29,7 +29,8 @@ STIM_CAP = os.path.join(DATA_DIR, 'nsddata_stimuli/stimuli/nsd/annotations/nsd_c
 STIM_CAT = os.path.join(DATA_DIR, 'nsddata_stimuli/stimuli/nsd/annotations/nsd_cat.json')
 
 FMRI_DIR = os.path.join(DATA_DIR, 'nsddata_betas/ppdata/subj01/func'+voxel_size+'/betas_fithrf_GLMdenoise_RR/')
-ROI_FILE = os.path.join(DATA_DIR, 'nsddata/ppdata/subj01/func'+voxel_size+'/roi/', ROI_FILE)
+ROI_FILES = [os.path.join(DATA_DIR, 'nsddata/ppdata/subj01/func'+voxel_size+'/roi/',
+                          ROI_FILE) for ROI_FILE in ROI_FILES]
 ROI_VOX = os.path.join(DATA_DIR, 'nsddata_betas/ppdata/subj01/func'+voxel_size+'/', ROI_VOX)
 
 TRIAL_PER_SESS = 750
@@ -93,38 +94,57 @@ def exists(val):
 def default(val, d):
     return val if exists(val) else d
 
-def extract_voxels(fmri_dir, roi_file, out_dir, regions=None, flatten=False):
+def extract_voxels(fmri_dir, roi_files, out_dir, regions=None, flatten=False):
     ''' Extract voxels defined by roi_file.
     Served as a preprocessing to save time during sample loading.
     Write extracted vectors into hdf5 files under output_dir.
 
     - fmri_dir: where the fmri betas are located.
                 Each beta file should have shape (750, 83, 104, 81).
-    - roi_file: the file defining ROI. Should have shape (81, 104, 83).
-                Voxels values out of interest are -1.
-                The else ranges from 0 to the (#region + 1).
-    - regions: a list. If provided, the funciton will only care about the voxels
-              in the given regions. If None, will care about all voxels not -1.
+    - roi_files: a list of files defining ROI. All have shape (81, 104, 83).
+                 Voxels values out of interest are -1.
+                 The else ranges from 0 to the (#region + 1).
+    - regions: a dict. {str(roi_file_name): list(interested regions)}
+               e.g. regions = {'prf-visualrois': [2, 3]}
+               If provided, the funciton will only care about the voxels
+               in the given regions. If None, will care about all voxels not -1.
     - flatten: if True, return a flattened vector for each fmri sample.
                (only voxels in the input roi_file are kept)
     - out_dir: where to write the new fmri to.
     '''
     assert os.path.isdir(out_dir), 'mkdir for the output directory first!'
-    mask = nib.load(roi_file).get_fdata()
 
-    if regions:
-        assert max(regions) <= mask.max(), 'region index out of range!'
-        mask = np.stack([mask == r for r in regions]).sum(0)
-        mask = (mask != 0)
-    else:
-        mask = (mask != -1)
-    print('ROI voxel count:', np.count_nonzero(mask))
+    mask = []
+    for roi_file in roi_files:
+        roi_name = os.path.basename(roi_file)[:-7]
+        _mask = nib.load(roi_file).get_fdata()
+        available_region = [int(r) for r in set(_mask.flatten())]
+        print(f'Extracting ROI based on {roi_name},',
+              f'available_regions: {available_region}')
 
+        if regions and roi_name in regions:
+            for r in regions[roi_name]:
+                assert r in available_region, (
+                    f'region index {r} is not available for ROI {roi_name}!')
+            _mask = np.stack([_mask == r for r in regions[roi_name]]).sum(0)
+            _mask = (_mask != 0)
+            print(f'Region {regions[roi_name]} voxel count:',
+                  np.count_nonzero(_mask))
+        else:
+            _mask = (_mask != -1)
+        print(f'ROI voxel count: {np.count_nonzero(_mask)}')
+        mask.append(_mask)
+
+    mask = np.stack(mask).sum(0)
+    mask = (mask != 0)
     # mask axis orders are different from fmri axis order, do transpose
     mask = mask.T
+    print(f'\nTotal ROI voxel count: {np.count_nonzero(mask)}\n', flush=True)
 
     # processing all fmri data
-    fmri_files = [f for f in os.listdir(fmri_dir) if os.path.isfile(os.path.join(fmri_dir, f))]
+    fmri_files = [f for f in os.listdir(fmri_dir) if
+                  os.path.isfile(os.path.join(fmri_dir, f)) and
+                  f[-5:] == '.hdf5']
     for fmri_file in tqdm(fmri_files):
         with h5py.File(os.path.join(fmri_dir, fmri_file), 'r') as f:
             fmri = f['betas'][()]
@@ -134,10 +154,9 @@ def extract_voxels(fmri_dir, roi_file, out_dir, regions=None, flatten=False):
         else:
             fmri = fmri * mask[None,...]
         # save new fmri
-        out_f = os.path.join(out_dir,
-                             os.path.basename(roi_file)[:-7] + '_' + fmri_file[:-5] + '.hdf5')
+        out_f = os.path.join(out_dir, fmri_file)
         with h5py.File(out_f, 'w') as f:
-            dset = f.create_dataset('roi_betas', data=fmri)
+            dset = f.create_dataset('betas', data=fmri)
 
 
 class NSDDataset(Dataset):
@@ -182,7 +201,6 @@ class NSDDataset(Dataset):
             self.fmri_dir = roi if roi else FMRI_DIR
             self.fmri_files = [f for f in os.listdir(self.fmri_dir) if
                                os.path.isfile(os.path.join(self.fmri_dir, f))]
-            self.fmri_key = 'roi_betas' if roi else 'betas'
         
         self.load_img = load_img
         self.load_fmri = load_fmri
@@ -195,7 +213,7 @@ class NSDDataset(Dataset):
     def get_fmri_shape(self):
         with h5py.File(os.path.join(self.fmri_dir,
                                     self.fmri_files[0]), 'r') as f:
-            return f[self.fmri_key][0].shape
+            return f['betas'][0].shape
 
     def __getitem__(self, idx, verbose=False):
         sample = {}
@@ -234,14 +252,14 @@ class NSDDataset(Dataset):
                         self.fmri_dir,
                         f'{self.fmri_files[0][:-7]}{sess[s]:02}.hdf5')
                     with h5py.File(fmri_file, 'r') as f:
-                        fmri_sample.append(f[self.fmri_key]
+                        fmri_sample.append(f['betas']
                                            [idx_array[s] % TRIAL_PER_SESS])
                 fmri_sample = np.stack(fmri_sample)
             else:
                 fmri_file = os.path.join(
                     self.fmri_dir, f'{self.fmri_files[0][:-7]}{sess:02}.hdf5')
                 with h5py.File(fmri_file, 'r') as f:
-                    fmri_sample = f[self.fmri_key][idx_array % TRIAL_PER_SESS]                
+                    fmri_sample = f['betas'][idx_array % TRIAL_PER_SESS]                
                 if verbose:
                     print('fmri loaded from', fmri_file)
                     print('fmri shape:', fmri_sample.shape)
