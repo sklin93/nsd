@@ -239,7 +239,7 @@ class NSDDataset(Dataset):
 
     def __getitem__(self, idx, verbose=False):
         sample = {}
-        multi = False if type(idx).__name__ == 'int' else True
+        multi = False if type(idx).__name__[:3] == 'int' else True
         if self.load_img or self.load_caption or self.load_cat:
             nsdId = self.subjectim[0, self.masterordering[idx] - 1] - 1
             if verbose:
