@@ -166,24 +166,28 @@ def extract_voxels(fmri_dir, roi_files, out_dir, regions=None, flatten=False):
 
 
 class NSDDataset(Dataset):
-    def __init__(self, load_img=False, img_trans=None,
-                 load_fmri=False, pad=None, roi=None,
-                 load_caption=False, load_cat=False, pt=False):
+    def __init__(self, pt=False, load_img=False, img_trans=None,
+                 load_fmri=False, fmri_pad=None, roi=None, load_caption=False,
+                 load_cat=False, caption_selection='first', tokenizer=None,
+                 text_pad=None):
         '''
         Support loading one or more of: image, fmri betas, text captions/categories.
-
+        - pt: if the returned sample will be a pytorch tensor or not.
         - load_img, load_fmri, load_caption, load_cat: all bool,
           choose the modalities you need.
-        - img_trans: torchvision Transformations, optional, only useful when pt=True.
-        - pad: int, pad fMRI vector to this length. Useful when model requires
-               inputs to have a certain shape.
         - roi: string, the directory contains extracted ROI voxels.
                if None, return the 3d fmri activity: (83, 104, 81) for 1.8mm
-        - pt: if the returned sample will be a pytorch tensor or not.
+        - caption_selection: either 'first' or 'all'. Each image has multiple
+                            captions. 'first' will only keep the first,
+                            and 'all' will concatenate all captions.
 
-        Note: there are multiple captions per image,
-              the returned caption only keeps the first one.
-        
+        if pt == True (aka using PyTorch), the following args/flags can be used:
+        - img_trans: torchvision Transformations, optional.
+        - fmri_pad: int, pad fMRI vector to this length. Useful when model
+                    requires inputs to have a certain shape.
+        - tokenizer: to convert text into tokens, tokenizer classes defined in 
+                     https://shorturl.at/brxA4.
+        - text_pad: int, pad tokenized text sequence into a fixed length.
         '''
         assert load_img or load_fmri or load_caption or load_caption, (
             'You must choose to load at least one modeality!'
@@ -215,12 +219,15 @@ class NSDDataset(Dataset):
                                os.path.isfile(os.path.join(self.fmri_dir, f)) and
                                f[-5:] == '.hdf5']
         
+        self.pt = pt
         self.load_img = load_img
         self.load_fmri = load_fmri
-        self.pad = pad
+        self.fmri_pad = fmri_pad
         self.load_caption = load_caption
         self.load_cat = load_cat
-        self.pt = pt
+        self.caption_selection = caption_selection
+        self.tokenizer = tokenizer
+        self.text_pad = text_pad
 
     def __len__(self):
         return TRIAL_PER_SESS * len(self.fmri_files)
@@ -232,9 +239,9 @@ class NSDDataset(Dataset):
             print(f'shape: {s}')
             num_vox = f['betas'][0].flatten().shape[0]
             print(f'num voxel: {num_vox}')
-            if self.pad:
-                print(f'padded to: {self.pad}')
-                return self.pad
+            if self.fmri_pad:
+                print(f'padded to: {self.fmri_pad}')
+                return self.fmri_pad
             return num_vox
 
     def __getitem__(self, idx, verbose=False):
@@ -298,17 +305,20 @@ class NSDDataset(Dataset):
                 #     fmri_sample = fmri_sample.flatten()
                 # if fmri_sample.ndim == 4: # batch, 3d volumn
                 #     fmri_sample = fmri_sample.flatten(start_dim=1)
-                if self.pad:
-                    fmri_sample = F.pad(fmri_sample,
-                        (0, self.pad - fmri_sample.shape[-1]), 'constant', 0)
+                if self.fmri_pad:
+                    fmri_sample = F.pad(fmri_sample, 
+                                        (0, self.fmri_pad - fmri_sample.shape[-1]),
+                                        'constant', 0)
             sample['fmri'] = fmri_sample
         
         if self.load_caption:
             if multi:
                 caption = []
                 for id in nsdId:
-                    caption.append(
-                        self.nsd_captions[str(self.stim_info['cocoId'][id])][0])
+                    cap = self.nsd_captions[str(self.stim_info['cocoId'][id])]
+                    cap = cap[0] if (self.caption_selection == 'first'
+                                    ) else ' '.join(cap)
+                    caption.append(cap)
             else:
                 caption = self.nsd_captions[str(self.stim_info['cocoId']
                                                 [nsdId])]
@@ -316,7 +326,16 @@ class NSDDataset(Dataset):
                     print('Captions:')
                     for a in caption:
                         print(a)
-                caption = [caption[0]]      
+                caption = [caption[0]] if (self.caption_selection == 'first'
+                                          ) else [' '.join(caption)]
+            if self.pt and self.tokenizer:
+                caption = [torch.tensor(self.tokenizer.encode(cap)).to(device)
+                           for cap in caption]
+                caption = torch.stack(caption)
+                if self.text_pad:
+                    caption = F.pad(caption,
+                                    (0, self.text_pad - caption.shape[-1]),
+                                    'constant', 0)
             sample['caption'] = caption
 
         if self.load_cat:
@@ -330,3 +349,4 @@ class NSDDataset(Dataset):
                     print('Categories:', cat)
             sample['cat'] = cat
         return sample
+
