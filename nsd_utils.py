@@ -7,9 +7,11 @@ import numpy as np
 import nibabel as nib
 import scipy.io as spio
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 import torch
 import torchvision
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from torchvision import transforms
 
@@ -121,6 +123,10 @@ def extract_voxels(fmri_dir, roi_files, out_dir, regions=None, flatten=False):
         available_region = [int(r) for r in set(_mask.flatten())]
         print(f'Extracting ROI based on {roi_name},',
               f'available_regions: {available_region}')
+        available_region.remove(-1)
+        region_count = [_mask == a_r for a_r in available_region]
+        region_count = [np.count_nonzero(r_c) for r_c in region_count]
+        print(region_count)
 
         if regions and roi_name in regions:
             for r in regions[roi_name]:
@@ -131,7 +137,7 @@ def extract_voxels(fmri_dir, roi_files, out_dir, regions=None, flatten=False):
             print(f'Region {regions[roi_name]} voxel count:',
                   np.count_nonzero(_mask))
         else:
-            _mask = (_mask != -1)
+            _mask = (_mask > 0)
         print(f'ROI voxel count: {np.count_nonzero(_mask)}')
         mask.append(_mask)
 
@@ -160,16 +166,20 @@ def extract_voxels(fmri_dir, roi_files, out_dir, regions=None, flatten=False):
 
 
 class NSDDataset(Dataset):
-    def __init__(self, load_img=False, img_trans=None, load_fmri=False,
-                 roi=None, load_caption=False, load_cat=False):
+    def __init__(self, load_img=False, img_trans=None,
+                 load_fmri=False, pad=None, roi=None,
+                 load_caption=False, load_cat=False, pt=False):
         '''
         Support loading one or more of: image, fmri betas, text captions/categories.
 
         - load_img, load_fmri, load_caption, load_cat: all bool,
           choose the modalities you need.
-        - img_trnas: torchvision Transformations, optional
+        - img_trans: torchvision Transformations, optional, only useful when pt=True.
+        - pad: int, pad fMRI vector to this length. Useful when model requires
+               inputs to have a certain shape.
         - roi: string, the directory contains extracted ROI voxels.
                if None, return the 3d fmri activity: (83, 104, 81) for 1.8mm
+        - pt: if the returned sample will be a pytorch tensor or not.
 
         Note: there are multiple captions per image,
               the returned caption only keeps the first one.
@@ -195,25 +205,37 @@ class NSDDataset(Dataset):
        
         if load_img:
             self.stim_file = STIM_FILE
+            if pt and (img_trans is None):
+                img_trans = transforms.ToTensor()
             self.img_trans = img_trans
        
         if load_fmri:
             self.fmri_dir = roi if roi else FMRI_DIR
             self.fmri_files = [f for f in os.listdir(self.fmri_dir) if
-                               os.path.isfile(os.path.join(self.fmri_dir, f))]
+                               os.path.isfile(os.path.join(self.fmri_dir, f)) and
+                               f[-5:] == '.hdf5']
         
         self.load_img = load_img
         self.load_fmri = load_fmri
+        self.pad = pad
         self.load_caption = load_caption
         self.load_cat = load_cat
+        self.pt = pt
 
     def __len__(self):
-        return MAX_IDX
+        return TRIAL_PER_SESS * len(self.fmri_files)
 
     def get_fmri_shape(self):
         with h5py.File(os.path.join(self.fmri_dir,
                                     self.fmri_files[0]), 'r') as f:
-            return f['betas'][0].shape
+            s = f['betas'][0].shape
+            print(f'shape: {s}')
+            num_vox = f['betas'][0].flatten().shape[0]
+            print(f'num voxel: {num_vox}')
+            if self.pad:
+                print(f'padded to: {self.pad}')
+                return self.pad
+            return num_vox
 
     def __getitem__(self, idx, verbose=False):
         sample = {}
@@ -236,9 +258,11 @@ class NSDDataset(Dataset):
             img_sample = img_sample[nsdId_order] if multi else img_sample
             if verbose:
                 print('stim shape:', img_sample.shape)                        
-            if self.img_trans:
-                img_sample = self.img_trans(img_sample)
-            sample['img'] = img_sample#.to(device)
+            if self.pt:
+                if self.img_trans:
+                    img_sample = self.img_trans(img_sample)
+                img_sample = img_sample.to(device)
+            sample['img'] = img_sample
 
         if self.load_fmri:
             idx_array = np.arange(default(idx.start, 0),
@@ -267,7 +291,16 @@ class NSDDataset(Dataset):
                         fmri_sample.mean(), fmri_sample.max())
             # # standardize
             # fmri_sample = zscore(fmri_sample)
-            # fmri_sample = torch.FloatTensor(fmri_sample).to(device)
+            if self.pt:
+                # fmri_sample = torch.FloatTensor(fmri_sample).to(device)
+                fmri_sample = torch.Tensor(fmri_sample).to(device)
+                # if fmri_sample.ndim == 3: # 3d voxel volumn
+                #     fmri_sample = fmri_sample.flatten()
+                # if fmri_sample.ndim == 4: # batch, 3d volumn
+                #     fmri_sample = fmri_sample.flatten(start_dim=1)
+                if self.pad:
+                    fmri_sample = F.pad(fmri_sample,
+                        (0, self.pad - fmri_sample.shape[-1]), 'constant', 0)
             sample['fmri'] = fmri_sample
         
         if self.load_caption:
