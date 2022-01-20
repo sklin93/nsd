@@ -306,8 +306,9 @@ class NSDDataset(Dataset):
                 # if fmri_sample.ndim == 4: # batch, 3d volumn
                 #     fmri_sample = fmri_sample.flatten(start_dim=1)
                 if self.fmri_pad:
-                    fmri_sample = F.pad(fmri_sample, 
-                                        (0, self.fmri_pad - fmri_sample.shape[-1]),
+                    left_pad = (self.fmri_pad - fmri_sample.shape[-1]) // 2
+                    right_pad = self.fmri_pad - fmri_sample.shape[-1] - left_pad
+                    fmri_sample = F.pad(fmri_sample, (left_pad, right_pad),
                                         'constant', 0)
             sample['fmri'] = fmri_sample
         
@@ -349,4 +350,3 @@ class NSDDataset(Dataset):
                     print('Categories:', cat)
             sample['cat'] = cat
         return sample
-
