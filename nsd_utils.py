@@ -151,7 +151,8 @@ def extract_voxels(fmri_dir, roi_files, out_dir, regions=None, flatten=False):
     fmri_files = [f for f in os.listdir(fmri_dir) if
                   os.path.isfile(os.path.join(fmri_dir, f)) and
                   f[-5:] == '.hdf5']
-    for fmri_file in tqdm(fmri_files):
+    for fmri_file in fmri_files:
+        print(os.path.join(fmri_dir, fmri_file), flush=True)
         with h5py.File(os.path.join(fmri_dir, fmri_file), 'r') as f:
             fmri = f['betas'][()]
         if flatten:
