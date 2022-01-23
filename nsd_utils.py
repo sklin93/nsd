@@ -333,7 +333,7 @@ class NSDDataset(Dataset):
             if self.pt and self.tokenizer:
                 caption = [torch.tensor(self.tokenizer.encode(cap)).to(device)
                            for cap in caption]
-                caption = torch.stack(caption)
+                caption = torch.stack(caption).squeeze()
                 if self.text_pad:
                     caption = F.pad(caption,
                                     (0, self.text_pad - caption.shape[-1]),
