@@ -178,9 +178,10 @@ class NSDDataset(Dataset):
           choose the modalities you need.
         - roi: string, the directory contains extracted ROI voxels.
                if None, return the 3d fmri activity: (83, 104, 81) for 1.8mm
-        - caption_selection: either 'first' or 'all'. Each image has multiple
-                            captions. 'first' will only keep the first,
-                            and 'all' will concatenate all captions.
+        - caption_selection: either 'first' or 'all' or 'random'. Each image has
+                            multiple captions. 'first' will only keep the first,
+                            and 'all' will concatenate all captions, 'random'
+                            will randomly choose one.
 
         if pt == True (aka using PyTorch), the following args/flags can be used:
         - img_trans: torchvision Transformations, optional.
@@ -226,12 +227,24 @@ class NSDDataset(Dataset):
         self.fmri_pad = fmri_pad
         self.load_caption = load_caption
         self.load_cat = load_cat
+        assert caption_selection in ['first', 'random', 'all'], (
+            "you must choose from 'first', 'random', 'all' as your caption selection method")
         self.caption_selection = caption_selection
         self.tokenizer = tokenizer
         self.text_pad = text_pad
 
     def __len__(self):
         return TRIAL_PER_SESS * len(self.fmri_files)
+
+    def _get_caption(self, cap, method):
+        if method == 'first':
+            cap = cap[0]
+        elif method == 'random':
+            rand_id = np.random.choice(len(cap))
+            cap = cap[rand_id]
+        else:
+            cap = ' '.join(cap)
+        return cap
 
     def get_fmri_shape(self):
         with h5py.File(os.path.join(self.fmri_dir,
@@ -312,15 +325,13 @@ class NSDDataset(Dataset):
                     fmri_sample = F.pad(fmri_sample, (left_pad, right_pad),
                                         'constant', 0)
             sample['fmri'] = fmri_sample
-        
+
         if self.load_caption:
             if multi:
                 caption = []
                 for id in nsdId:
                     cap = self.nsd_captions[str(self.stim_info['cocoId'][id])]
-                    cap = cap[0] if (self.caption_selection == 'first'
-                                    ) else ' '.join(cap)
-                    caption.append(cap)
+                    caption.append(self._get_caption(cap, self.caption_selection))
             else:
                 caption = self.nsd_captions[str(self.stim_info['cocoId']
                                                 [nsdId])]
@@ -328,8 +339,8 @@ class NSDDataset(Dataset):
                     print('Captions:')
                     for a in caption:
                         print(a)
-                caption = [caption[0]] if (self.caption_selection == 'first'
-                                          ) else [' '.join(caption)]
+                caption = [self._get_caption(caption, self.caption_selection)]
+
             if self.pt and self.tokenizer:
                 caption = [torch.tensor(self.tokenizer.encode(cap)).to(device)
                            for cap in caption]
